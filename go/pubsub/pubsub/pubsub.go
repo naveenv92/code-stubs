@@ -2,6 +2,7 @@ package pubsub
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 )
 
@@ -86,6 +87,7 @@ func NewSubscriber() *Subscriber {
 func (s *Subscriber) Subscribe(eventBus *EventBus, topic string) {
 	ch := eventBus.Subscribe(topic)
 	s.subscriptions[topic] = ch
+	slog.Info("subscribed to new topic", "topic", topic)
 }
 
 func (s *Subscriber) Subscriptions() []string {
@@ -94,6 +96,13 @@ func (s *Subscriber) Subscriptions() []string {
 		subs = append(subs, t)
 	}
 	return subs
+}
+
+func (s *Subscriber) Unsubscribe(eventBus *EventBus, topic string) {
+	if ch, ok := s.subscriptions[topic]; ok {
+		eventBus.topics[topic].Unsubscribe(ch)
+	}
+	slog.Info("unsubscribed from topic", "topic", topic)
 }
 
 func (s *Subscriber) Listen() {

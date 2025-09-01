@@ -36,4 +36,11 @@ func main() {
 	eventBus.Publish("topic_2", "hello on topic 2!")
 	time.Sleep(1 * time.Second)
 
+	// unsubscribe from topic 1
+	s1.Unsubscribe(eventBus, "topic_1")
+
+	// publish to topic 1 and wait
+	eventBus.Publish("topic_1", "hello again on topic 1!")
+	time.Sleep(1 * time.Second)
+
 }

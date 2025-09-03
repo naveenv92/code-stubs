@@ -1,6 +1,7 @@
 package pubsub
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -26,14 +27,14 @@ func (e *EventBus) AddTopic(topic string) {
 	}
 }
 
-func (e *EventBus) Subscribe(topic string) chan string {
+func (e *EventBus) Subscribe(topic string) (chan string, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
 	if _, ok := e.topics[topic]; ok {
-		return e.topics[topic].Subscribe()
+		return e.topics[topic].Subscribe(), nil
 	}
-	return nil
+	return nil, errors.New("ERROR: topic does not exist")
 }
 
 func (e *EventBus) Unsubscribe(topic string, ch chan string) {
@@ -95,28 +96,56 @@ func (b *Broker) Publish(msg string) {
 }
 
 type Subscriber struct {
-	subscriptions map[string]chan string
+	mu            sync.RWMutex
+	subscriptions map[string]*subscription
 	listenerChan  chan string
+}
+
+type subscription struct {
+	topic string
+	ch    chan string
+	done  chan struct{}
 }
 
 func NewSubscriber() *Subscriber {
 	return &Subscriber{
-		subscriptions: make(map[string]chan string),
+		subscriptions: make(map[string]*subscription),
 		listenerChan:  make(chan string, 100),
 	}
 }
 
-func (s *Subscriber) Subscribe(eventBus *EventBus, topic string) {
-	ch := eventBus.Subscribe(topic)
-	s.subscriptions[topic] = ch
+func (s *Subscriber) Subscribe(eventBus *EventBus, topic string) error {
+	ch, err := eventBus.Subscribe(topic)
+	if err != nil {
+		return fmt.Errorf("failed to subscribe: topic %s does not exist", topic)
+	}
+
+	sub := &subscription{
+		topic: topic,
+		ch:    ch,
+		done:  make(chan struct{}),
+	}
+
+	s.mu.Lock()
+	s.subscriptions[topic] = sub
+	s.mu.Unlock()
+
 	slog.Info("subscribed to new topic", "topic", topic)
 
 	// fan into the listener channel
-	go func(forwardChan chan string) {
-		for msg := range forwardChan {
-			s.listenerChan <- msg
+	go func() {
+		for {
+			select {
+			case msg := <-sub.ch:
+				s.listenerChan <- msg
+			case <-sub.done:
+				slog.Info("shutting down fan-in for topic", "topic", sub.topic)
+				return
+			}
 		}
-	}(ch)
+	}()
+
+	return nil
 }
 
 func (s *Subscriber) Subscriptions() []string {
@@ -128,10 +157,20 @@ func (s *Subscriber) Subscriptions() []string {
 }
 
 func (s *Subscriber) Unsubscribe(eventBus *EventBus, topic string) {
-	if ch, ok := s.subscriptions[topic]; ok {
-		eventBus.Unsubscribe(topic, ch)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if sub, ok := s.subscriptions[topic]; ok {
+		delete(s.subscriptions, sub.topic)
+
+		// close the done channel
+		close(sub.done)
+
+		// unsubscribe from the event bus
+		eventBus.Unsubscribe(topic, sub.ch)
+
+		slog.Info("unsubscribed from topic", "topic", topic)
 	}
-	slog.Info("unsubscribed from topic", "topic", topic)
 }
 
 func (s *Subscriber) Listen() {

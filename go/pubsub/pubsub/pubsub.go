@@ -27,13 +27,25 @@ func (e *EventBus) AddTopic(topic string) {
 }
 
 func (e *EventBus) Subscribe(topic string) chan string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
 	if _, ok := e.topics[topic]; ok {
 		return e.topics[topic].Subscribe()
 	}
 	return nil
 }
 
+func (e *EventBus) Unsubscribe(topic string, ch chan string) {
+	if _, ok := e.topics[topic]; ok {
+		e.topics[topic].Unsubscribe(ch)
+	}
+}
+
 func (e *EventBus) Publish(topic, message string) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
 	if _, ok := e.topics[topic]; ok {
 		e.topics[topic].Publish(message)
 	}
@@ -60,9 +72,13 @@ func (b *Broker) Subscribe() chan string {
 
 func (b *Broker) Unsubscribe(ch chan string) {
 	b.mu.Lock()
-	delete(b.subscribers, ch)
-	close(ch)
-	b.mu.Unlock()
+	defer b.mu.Unlock()
+
+	if _, ok := b.subscribers[ch]; ok {
+		delete(b.subscribers, ch)
+		close(ch)
+	}
+
 }
 
 func (b *Broker) Publish(msg string) {
@@ -70,17 +86,23 @@ func (b *Broker) Publish(msg string) {
 	defer b.mu.RUnlock()
 
 	for ch := range b.subscribers {
-		ch <- msg
+		select {
+		case ch <- msg:
+		default:
+			// drop the message to make this non-blocking
+		}
 	}
 }
 
 type Subscriber struct {
 	subscriptions map[string]chan string
+	listenerChan  chan string
 }
 
 func NewSubscriber() *Subscriber {
 	return &Subscriber{
 		subscriptions: make(map[string]chan string),
+		listenerChan:  make(chan string, 100),
 	}
 }
 
@@ -88,6 +110,13 @@ func (s *Subscriber) Subscribe(eventBus *EventBus, topic string) {
 	ch := eventBus.Subscribe(topic)
 	s.subscriptions[topic] = ch
 	slog.Info("subscribed to new topic", "topic", topic)
+
+	// fan into the listener channel
+	go func(forwardChan chan string) {
+		for msg := range forwardChan {
+			s.listenerChan <- msg
+		}
+	}(ch)
 }
 
 func (s *Subscriber) Subscriptions() []string {
@@ -100,17 +129,15 @@ func (s *Subscriber) Subscriptions() []string {
 
 func (s *Subscriber) Unsubscribe(eventBus *EventBus, topic string) {
 	if ch, ok := s.subscriptions[topic]; ok {
-		eventBus.topics[topic].Unsubscribe(ch)
+		eventBus.Unsubscribe(topic, ch)
 	}
 	slog.Info("unsubscribed from topic", "topic", topic)
 }
 
 func (s *Subscriber) Listen() {
-	for _, sub := range s.subscriptions {
-		go func() {
-			for msg := range sub {
-				fmt.Printf("Subscriber received message: %s\n", msg)
-			}
-		}()
-	}
+	go func() {
+		for msg := range s.listenerChan {
+			fmt.Printf("Subscriber received message: %s\n", msg)
+		}
+	}()
 }

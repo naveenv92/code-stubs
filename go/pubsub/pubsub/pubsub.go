@@ -37,10 +37,15 @@ func (e *EventBus) Subscribe(topic string) (chan string, error) {
 	return nil, errors.New("ERROR: topic does not exist")
 }
 
-func (e *EventBus) Unsubscribe(topic string, ch chan string) {
+func (e *EventBus) Unsubscribe(topic string, ch chan string) error {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
 	if _, ok := e.topics[topic]; ok {
-		e.topics[topic].Unsubscribe(ch)
+		return e.topics[topic].Unsubscribe(ch)
 	}
+
+	return errors.New("ERROR: topic does not exist")
 }
 
 func (e *EventBus) Publish(topic, message string) {
@@ -71,14 +76,17 @@ func (b *Broker) Subscribe() chan string {
 	return ch
 }
 
-func (b *Broker) Unsubscribe(ch chan string) {
+func (b *Broker) Unsubscribe(ch chan string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	if _, ok := b.subscribers[ch]; ok {
 		delete(b.subscribers, ch)
 		close(ch)
+		return nil
 	}
+
+	return errors.New("ERROR: channel was not subscribed to this topic")
 
 }
 
@@ -156,12 +164,12 @@ func (s *Subscriber) Subscriptions() []string {
 	return subs
 }
 
-func (s *Subscriber) Unsubscribe(eventBus *EventBus, topic string) {
+func (s *Subscriber) Unsubscribe(eventBus *EventBus, topic string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if sub, ok := s.subscriptions[topic]; ok {
 		delete(s.subscriptions, sub.topic)
+		s.mu.Unlock()
 
 		// close the done channel
 		close(sub.done)
@@ -170,6 +178,10 @@ func (s *Subscriber) Unsubscribe(eventBus *EventBus, topic string) {
 		eventBus.Unsubscribe(topic, sub.ch)
 
 		slog.Info("unsubscribed from topic", "topic", topic)
+		return nil
+	} else {
+		s.mu.Unlock()
+		return errors.New("ERROR: not subscribed to topic")
 	}
 }
 
